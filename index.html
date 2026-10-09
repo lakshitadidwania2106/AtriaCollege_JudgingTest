@@ -54,6 +54,13 @@ header{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 8
 .pill.paused .dot{background:var(--warn)}
 .pill.over{border-color:var(--bad);color:var(--bad)}
 .pill.over .dot{background:var(--bad)}
+.sync{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);background:var(--surface);border-radius:999px;
+  padding:5px 10px;font-size:12px;font-weight:700;color:var(--muted);white-space:nowrap}
+.sync .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.sync.ok .dot{background:var(--good)}
+.sync.busy .dot{background:var(--warn)}
+.sync.err{color:var(--bad);border-color:var(--bad)}
+.sync.err .dot{background:var(--bad)}
 .iconbtn{border:1px solid var(--border);background:var(--surface);border-radius:10px;width:38px;height:38px;
   display:inline-grid;place-items:center;font-size:17px}
 
@@ -217,6 +224,7 @@ dialog{overflow:hidden}
   <div class="wrap hbar">
     <div class="brand">🏆 <span id="eventName">Hackathon Judge</span></div>
     <button class="pill" id="pill" aria-label="Go to timer"><span class="dot"></span><span id="pillTime">6:00</span></button>
+    <button class="sync busy" id="sync" aria-live="polite"><span class="dot"></span><span id="syncTxt">Connecting</span></button>
     <button class="iconbtn" id="themeBtn" aria-label="Toggle theme">◐</button>
   </div>
 </header>
@@ -323,6 +331,7 @@ dialog{overflow:hidden}
 
 <div class="toast" id="toast" role="status"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (() => {
 const CRITERIA = [
@@ -342,9 +351,9 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 
 /* ---------- State ---------- */
 let state = load();
-function blank(){ return {teams:[], lastJudge:'', timer:{mins:6, endAt:null, remaining:null, team:''}, theme:null}; }
+function blank(){ return {teams:[], pending:{up:{}, del:[]}, lastJudge:'', timer:{mins:6, endAt:null, remaining:null, team:''}, theme:null}; }
 function load(){
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.teams)) return Object.assign(blank(), s); } catch(e){}
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.teams)) { const b=Object.assign(blank(), s); if(!b.pending||!b.pending.up) b.pending={up:{},del:[]}; return b; } } catch(e){}
   return blank();
 }
 function save(){ try { localStorage.setItem(KEY, JSON.stringify(state)); } catch(e){} }
@@ -398,7 +407,8 @@ $('#addForm').onsubmit = e => {
   if (!name) { $('#teamInput').focus(); return; }
   if (!judge) { toast('Pick a judge for this team'); $('#judgeInput').focus(); return; }
   if (state.teams.some(t => t.name.toLowerCase()===name.toLowerCase())) { toast('That team already exists'); return; }
-  state.teams.push({id:uid(), name, judge, scores:{}, notes:''});
+  const nt = {id:uid(), name, judge, scores:{}, notes:'', created_at:new Date().toISOString()};
+  state.teams.push(nt); queueUp(nt.id);
   state.lastJudge = judge; // keep the same judge selected for the next team
   $('#teamInput').value=''; save(); renderAll(); toast(`Added ${name} · ${judge}`); $('#teamInput').focus();
 };
@@ -485,20 +495,24 @@ sheet.addEventListener('cancel', e => { e.preventDefault(); closeSheet(); });
 $('#sheetForm').onsubmit = e => {
   e.preventDefault();
   if (!editing) return;
+  editing = state.teams.find(t=>t.id===editing.id);
+  if (!editing) { closeSheet(); toast('This team was deleted by another judge'); return; }
   const nm = $('#sheetName').value.trim();
   if (nm && !state.teams.some(t=>t!==editing && t.name.toLowerCase()===nm.toLowerCase())) editing.name = nm;
   editing.scores = {...draft};
   editing.notes = $('#notes').value.trim();
   editing.judge = $('#sheetJudge').value;
   const t = editing;
-  save(); closeSheet(); renderAll();
+  queueUp(t.id); save(); closeSheet(); renderAll();
   toast(isScored(t) ? `${t.name}: ${fmt(total(t))}/${MAX_TOTAL} saved` : `${t.name}: partial marks saved`);
 };
 async function deleteTeam(){
   if (!editing) return;
   if (!await askConfirm(`Delete "${editing.name}" and its marks?`)) return;
-  state.teams = state.teams.filter(t=>t!==editing);
-  if (state.timer.team===editing.id) state.timer.team='';
+  const id = editing.id;
+  state.teams = state.teams.filter(t=>t.id!==id);
+  if (state.timer.team===id) state.timer.team='';
+  queueDel(id);
   save(); closeSheet(); renderAll(); toast('Team deleted');
 }
 $('#sheetDelete').onclick = deleteTeam;
@@ -592,7 +606,11 @@ $('#restoreFile').onchange = async e => {
     const d = JSON.parse(await f.text());
     if (!Array.isArray(d.teams)) throw 0;
     if (state.teams.length && !await askConfirm('Replace current teams with the backup?', 'Replace')) return;
-    state.teams = d.teams.map(t=>({id:t.id||uid(), name:String(t.name||'Team'), judge:t.judge||'', scores:t.scores||{}, notes:t.notes||''}));
+    const keep = new Set(d.teams.map(t=>t.id));
+    state.teams.filter(t=>!keep.has(t.id)).forEach(t=>queueDel(t.id));
+    state.teams = d.teams.map((t,i)=>({id:t.id||uid(), name:String(t.name||'Team'), judge:t.judge||'', scores:t.scores||{}, notes:t.notes||'',
+      created_at:t.created_at||new Date(Date.now()+i).toISOString()}));
+    state.teams.forEach(t=>queueUp(t.id));
     save(); renderAll(); toast(`Restored ${state.teams.length} teams`);
   } catch(_) { toast('That file is not a valid backup'); }
 };
@@ -724,6 +742,100 @@ function renderPicker(){
 }
 $('#presenting').onchange = e => { T.team = e.target.value; save(); renderPicker(); };
 $('#scoreNowBtn').onclick = () => { if (T.team) openSheet(T.team); };
+
+/* ---------- Supabase sync ----------
+   Local copy (localStorage) is used immediately; changes are queued and pushed to Supabase.
+   Realtime keeps every judge's screen up to date. If the network drops, edits stay queued and retry. */
+const SB_URL = 'https://zqhrjfjyxustkvaykpdh.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpxaHJqZmp5eHVzdGt2YXlrcGRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE1NzM1NDgsImV4cCI6MjEwNzE0OTU0OH0.3nf-9QcW-2kLCnLirT3gKOF1adodXkzxg6d6sM4VwTk';
+const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_KEY) : null;
+let syncErr = '', live = false, flushing = false, seq = 0;
+
+function setSync(kind, txt){ const el=$('#sync'); el.className='sync '+kind; $('#syncTxt').textContent=txt; }
+function refreshSync(){
+  const n = Object.keys(state.pending.up).length + state.pending.del.length;
+  if (!sb) return setSync('err','Offline');
+  if (syncErr) return setSync('err', n ? `${n} unsynced` : 'Offline');
+  if (n) return setSync('busy','Saving…');
+  setSync(live?'ok':'busy', live?'Live':'Connecting');
+}
+$('#sync').onclick = () => toast(
+  syncErr ? `Not synced: ${syncErr}. Your marks are kept on this device and will upload automatically.`
+  : live ? 'Connected. Scores sync live across all judges.' : 'Connecting to the database…');
+
+function queueUp(id){ state.pending.up[id] = ++seq + Date.now(); save(); flush(); }
+function queueDel(id){ delete state.pending.up[id]; if(!state.pending.del.includes(id)) state.pending.del.push(id); save(); flush(); }
+const toRow = t => ({id:t.id, name:t.name, judge:t.judge||'', scores:t.scores||{}, notes:t.notes||'',
+  created_at:t.created_at||new Date().toISOString(), updated_at:new Date().toISOString()});
+const fromRow = r => ({id:r.id, name:r.name, judge:r.judge||'', scores:r.scores||{}, notes:r.notes||'', created_at:r.created_at});
+const byCreated = (a,b) => String(a.created_at||'').localeCompare(String(b.created_at||''));
+function explain(e){
+  const m = (e && (e.message||e.code)) || 'network error';
+  return /teams|PGRST205|42P01|schema cache/i.test(m) ? 'database table not set up yet' : m;
+}
+
+async function flush(){
+  refreshSync();
+  if (!sb || flushing) return;
+  flushing = true;
+  try {
+    const P = state.pending;
+    if (P.del.length){
+      const ids = [...P.del];
+      const {error} = await sb.from('teams').delete().in('id', ids);
+      if (error) throw error;
+      P.del = P.del.filter(i => !ids.includes(i));
+    }
+    const snap = {...P.up}, ids = Object.keys(snap);
+    if (ids.length){
+      const rows = ids.map(id => state.teams.find(t=>t.id===id)).filter(Boolean).map(toRow);
+      if (rows.length){ const {error} = await sb.from('teams').upsert(rows); if (error) throw error; }
+      ids.forEach(id => { if (P.up[id]===snap[id]) delete P.up[id]; }); // keep ids edited again mid-upload
+    }
+    syncErr = ''; save();
+  } catch(e){ syncErr = explain(e); }
+  finally { flushing = false; refreshSync(); }
+  if (!syncErr && (Object.keys(state.pending.up).length || state.pending.del.length)) flush();
+}
+
+async function pull(){
+  if (!sb) return;
+  const {data, error} = await sb.from('teams').select('*').order('created_at');
+  if (error){ syncErr = explain(error); refreshSync(); return; }
+  const P = state.pending, map = new Map(data.map(r => [r.id, fromRow(r)]));
+  Object.keys(P.up).forEach(id => { const t = state.teams.find(x=>x.id===id); if (t) map.set(id, t); }); // unsent local edits win
+  P.del.forEach(id => map.delete(id));
+  state.teams = [...map.values()].sort(byCreated);
+  syncErr = ''; save(); renderAll(); flush();
+}
+
+function applyRemote(p){
+  if (p.eventType === 'DELETE'){
+    const id = p.old && p.old.id; if (!id) return;
+    state.teams = state.teams.filter(t => t.id !== id);
+  } else {
+    const t = fromRow(p.new);
+    if (state.pending.up[t.id] || state.pending.del.includes(t.id)) return; // our own newer edit is on its way
+    const i = state.teams.findIndex(x => x.id === t.id);
+    if (i >= 0) state.teams[i] = t; else { state.teams.push(t); state.teams.sort(byCreated); }
+  }
+  save(); renderAll();
+}
+
+if (sb){
+  sb.channel('teams-live')
+    .on('postgres_changes', {event:'*', schema:'public', table:'teams'}, applyRemote)
+    .subscribe(status => {
+      live = status === 'SUBSCRIBED';
+      if (live) pull(); // catch anything missed while disconnected
+      refreshSync();
+    });
+  pull();
+  window.addEventListener('online', () => { pull(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState==='visible') pull(); });
+  setInterval(() => { if (syncErr || Object.keys(state.pending.up).length || state.pending.del.length) flush(); }, 10000);
+}
+refreshSync();
 
 /* ---------- Boot ---------- */
 function renderAll(){ renderTeams(); renderPicker(); if ($('#view-board').classList.contains('active')) renderBoard(); }
