@@ -5,6 +5,7 @@ A single-page scoring app for hackathon judges.
 - Add teams and assign a judge to each
 - Score 7 criteria (total out of 100): UI + Responsive (10), Working (25), Code Base Explanation (15), Teamwork (10), Unique Features (20), GitHub + Deployment (10), Presentation (10)
 - Live leaderboard with tie-breaks (Working, then Unique Features), per-judge filter and category leaders
+- Top by judge: each judge's top 3 teams at a glance (tap a judge to see all of their teams)
 - 6-minute presentation timer with warning beeps and an alarm at 0:00
 - Export CSV, backup and restore
 
