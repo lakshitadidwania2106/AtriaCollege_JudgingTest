@@ -160,27 +160,6 @@ h2{font-size:20px;margin:0 0 4px}
 .breakdown .best{color:var(--good)}
 .breakdown .note{grid-column:1/-1;color:var(--muted);font-style:italic;border-top:1px solid var(--border);padding-top:8px;margin-top:4px;white-space:pre-wrap}
 .row .toggle{border:0;background:none;color:var(--muted);font-size:13px;padding:6px 0 0;font-weight:600}
-.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:3px;gap:2px}
-.seg button{border:0;background:none;border-radius:9px;padding:7px 12px;font-weight:600;font-size:14px;color:var(--muted);min-height:34px}
-.seg button[aria-pressed="true"]{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
-.lbctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 12px}
-.lbctl .filter{margin:0}
-.rawline{display:block;font-size:12px;color:var(--muted);font-weight:500;text-align:right;margin-top:1px}
-.up{color:var(--good)}.down{color:var(--bad)}
-.calib{margin-top:18px;padding:4px 14px 12px}
-.calib table{width:100%;border-collapse:collapse;font-size:14px}
-.calib th{font-size:12px;color:var(--muted);font-weight:600;text-align:right;padding:8px 4px 6px;border-bottom:1px solid var(--border)}
-.calib th:first-child,.calib td:first-child{text-align:left}
-.calib td{padding:8px 4px;border-bottom:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.calib td:first-child{white-space:normal}
-.calib tr:last-child td{border-bottom:0}
-.tag{font-size:11px;font-weight:700;border-radius:999px;padding:2px 7px}
-.tag.strict{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
-.tag.lenient{background:color-mix(in srgb,var(--good) 15%,transparent);color:var(--good)}
-.tag.fair{background:var(--surface-2);color:var(--muted)}
-details.how{margin-top:10px;font-size:13px;color:var(--muted)}
-details.how summary{cursor:pointer;font-weight:600;color:var(--text);padding:4px 0}
-details.how p{margin:6px 0}
 .tie{font-size:11px;font-weight:700;color:var(--warn);margin-left:6px}
 .cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;margin-top:18px}
 .cat{padding:10px 12px;font-size:13px}
@@ -309,14 +288,8 @@ dialog{overflow:hidden}
   <!-- LEADERBOARD -->
   <section class="view" id="view-board">
     <h2>Leaderboard</h2>
-    <p class="sub">Normalized scores even out strict and lenient judges. Ties broken by Working, then Unique Features. Tap a team for the breakdown.</p>
-    <div class="lbctl">
-      <div class="seg" role="group" aria-label="Score type">
-        <button type="button" data-mode="norm">⚖️ Normalized</button>
-        <button type="button" data-mode="raw">Raw</button>
-      </div>
-      <div class="filter"><label for="lbJudge">Show</label><select id="lbJudge" class="fsel"></select></div>
-    </div>
+    <p class="sub">Ties broken by Working, then Unique Features. Tap a team for the breakdown.</p>
+    <div class="filter"><label for="lbJudge">Show</label><select id="lbJudge" class="fsel"></select></div>
     <div class="lb" id="lb"></div>
     <div id="catWrap"></div>
     <h3>Data</h3>
@@ -547,48 +520,13 @@ $('#sheetDelete').onclick = deleteTeam;
 /* ---------- Leaderboard ---------- */
 let lbJudge = '';
 const inFilter = t => !lbJudge || t.judge===lbJudge;
-
-/* Judge normalization.
-   Each judge's totals are converted to z-scores against that judge's own average and spread, then mapped
-   back onto the overall average and spread of all scored teams:
-       normalized = overallMean + (raw - judgeMean) / judgeSD * overallSD
-   Judges with few teams give unreliable averages, so judgeMean and judgeSD are blended toward the overall
-   values with a weight of K "virtual teams" (shrinkage). A judge with one team therefore leaves it unchanged,
-   and the correction grows as the judge scores more teams. */
-const SHRINK_K = 2;
-const mean = xs => xs.reduce((a,b)=>a+b,0)/xs.length;
-const sdev = (xs,m=mean(xs)) => Math.sqrt(xs.reduce((a,b)=>a+(b-m)**2,0)/xs.length);
-function judgeStats(){
-  const scored = state.teams.filter(isScored);
-  const all = scored.map(total);
-  const S = {n:all.length, mean:all.length?mean(all):0, sd:all.length?sdev(all):0, judges:{}};
-  scored.forEach(t => (S.judges[t.judge||'—'] ||= []).push(total(t)));
-  for (const j in S.judges){
-    const xs = S.judges[j], n = xs.length, m = mean(xs), sd = sdev(xs, m);
-    const mEff = (n*m + SHRINK_K*S.mean)/(n+SHRINK_K);
-    const sdEff = (n*sd + SHRINK_K*S.sd)/(n+SHRINK_K);
-    S.judges[j] = {n, mean:m, sd, mEff, sdEff, shift: S.mean - mEff};
-  }
-  return S;
-}
-function normalize(t, S){
-  const raw = total(t), J = S.judges[t.judge||'—'];
-  if (!J || S.n < 2) return raw;
-  const v = J.sdEff > 0 ? S.mean + (raw - J.mEff) / J.sdEff * S.sd : raw + J.shift;
-  return Math.max(0, Math.min(MAX_TOTAL, v));
-}
-const round1 = x => Math.round(x*10)/10;
-let lbMode = state.lbMode || 'norm';
-
-function ranked(all, mode=lbMode){
-  const S = judgeStats();
-  const scored = state.teams.filter(t => isScored(t) && (all || inFilter(t)))
-    .map(t=>{ const raw = total(t), norm = round1(normalize(t,S)); return {t, raw, norm, tot: mode==='raw'?raw:norm}; });
+function ranked(all){
+  const scored = state.teams.filter(t => isScored(t) && (all || inFilter(t))).map(t=>({t, tot:total(t)}));
   const cmp = (a,b) => b.tot-a.tot || b.t.scores.working-a.t.scores.working || b.t.scores.unique-a.t.scores.unique;
   scored.sort((a,b)=> cmp(a,b) || a.t.name.localeCompare(b.t.name));
   scored.forEach((r,i)=>{
     r.rank = (i>0 && cmp(scored[i-1],r)===0) ? scored[i-1].rank : i+1;
-    r.tiebroken = scored.some(o=>o!==r && round1(o.tot)===round1(r.tot));
+    r.tiebroken = scored.some(o=>o!==r && o.tot===r.tot);
   });
   return scored;
 }
@@ -611,14 +549,11 @@ function renderBoard(){
         <div class="top">
           <div class="rank">${medal}</div>
           <div class="info"><div class="nm">${esc(t.name)}${r.tiebroken?'<span class="tie">TIE-BREAK</span>':''}</div>${t.judge?`<span class="judge">${esc(t.judge)}</span>`:''}</div>
-          <div class="score-big">${fmt(r.tot)}<small> /${MAX_TOTAL}</small>${lbMode==='norm'?(()=>{const d=round1(r.norm-r.raw);
-            return `<span class="rawline">raw ${fmt(r.raw)} · <span class="${d>0?'up':d<0?'down':''}">${d>0?'+':''}${fmt(d)}</span></span>`;})():''}</div>
+          <div class="score-big">${fmt(r.tot)}<small> /${MAX_TOTAL}</small></div>
         </div>
         <div class="bar"><i style="width:${r.tot/MAX_TOTAL*100}%"></i></div>
         <div class="breakdown">
           ${CRITERIA.map(c=>`<span>${c.name}</span><span class="${t.scores[c.id]===best[c.id]&&rows.length>1?'best':''}">${fmt(t.scores[c.id])} / ${c.max}</span>`).join('')}
-          <span><b>Raw total</b></span><span>${fmt(r.raw)} / ${MAX_TOTAL}</span>
-          <span><b>Normalized total</b></span><span>${fmt(r.norm)} / ${MAX_TOTAL}</span>
           ${t.notes?`<span class="note">${esc(t.notes)}</span>`:''}
         </div>
         <button class="toggle" type="button">${openRows.has(t.id)?'Hide':'Show'} breakdown · <span data-edit>Edit marks</span></button>
@@ -636,9 +571,7 @@ function renderBoard(){
     row.querySelector('.top').onclick = () => { const id=row.dataset.id; openRows.has(id)?openRows.delete(id):openRows.add(id); renderBoard(); };
   });
 
-  document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode===lbMode));
-
-  // Category leaders + judge calibration
+  // Category leaders
   const cw = $('#catWrap');
   if (rows.length >= 2){
     cw.innerHTML = `<h3>Best in each category</h3><div class="cats">${CRITERIA.map(c=>{
@@ -646,32 +579,7 @@ function renderBoard(){
       return `<div class="card cat"><span class="k">${c.name}</span><b title="${top.join(', ')}">${top.join(', ')}</b><span class="k">${fmt(best[c.id])} / ${c.max}</span></div>`;
     }).join('')}</div>`;
   } else cw.innerHTML='';
-
-  const S = judgeStats(), js = Object.keys(S.judges);
-  if (js.length >= 1 && S.n >= 2){
-    const order = js.sort((a,b)=>S.judges[a].mean-S.judges[b].mean);
-    cw.insertAdjacentHTML('beforeend', `<h3>Judge calibration</h3>
-      <div class="card calib"><table>
-        <thead><tr><th>Judge</th><th>Teams</th><th>Avg given</th><th>Adjust</th></tr></thead>
-        <tbody>${order.map(j=>{
-          const J=S.judges[j], d=round1(J.mean-S.mean);
-          const tag = d<=-3 ? '<span class="tag strict">Strict</span>' : d>=3 ? '<span class="tag lenient">Lenient</span>' : '<span class="tag fair">Balanced</span>';
-          const mine = state.teams.filter(t=>isScored(t) && (t.judge||'—')===j);
-          const sh = round1(mean(mine.map(t=>normalize(t,S)-total(t)))); // average actual change for this judge's teams
-          return `<tr><td>${esc(j)} ${tag}</td><td>${J.n}</td><td>${fmt(round1(J.mean))}</td><td class="${sh>0?'up':sh<0?'down':''}">${sh>0?'+':''}${fmt(sh)}</td></tr>`;
-        }).join('')}</tbody></table>
-        <details class="how"><summary>How is this calculated?</summary>
-          <p>Overall average across all ${S.n} scored teams: <b>${fmt(round1(S.mean))}</b>, spread ±${fmt(round1(S.sd))}.</p>
-          <p>Each team's score is compared with the average and spread of <i>its own judge</i>, then placed on the overall scale:<br>
-          <code>normalized = overall avg + (raw − judge avg) ÷ judge spread × overall spread</code></p>
-          <p>A team its judge rated above that judge's average stays above the overall average, whatever the judge's personal scale was.</p>
-          <p>Judges with only a few teams get a smaller correction, because their average isn't reliable yet (one team = no change). "Adjust" is the average change applied to each judge's teams.</p>
-          <p>This works best when teams are spread randomly across judges. If one judge really did get the strongest teams, use <b>Raw</b>.</p>
-        </details>
-      </div>`);
-  }
 }
-document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { lbMode = state.lbMode = b.dataset.mode; save(); renderBoard(); });
 
 $('#lbJudge').onchange = e => { lbJudge = e.target.value; renderBoard(); };
 
@@ -683,11 +591,11 @@ function download(name, text, type){
 const stamp = () => new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
 $('#csvBtn').onclick = () => {
   const q = v => `"${String(v).replace(/"/g,'""')}"`;
-  const head = ['Rank','Team','Judge',...CRITERIA.map(c=>`${c.name} (/${c.max})`),`Raw total (/${MAX_TOTAL})`,`Normalized total (/${MAX_TOTAL})`,'Notes'];
-  const r = ranked(true, 'norm');
+  const head = ['Rank','Team','Judge',...CRITERIA.map(c=>`${c.name} (/${c.max})`),`Total (/${MAX_TOTAL})`,'Notes'];
+  const r = ranked(true);
   const lines = [head.map(q).join(',')];
-  r.forEach(x=>lines.push([x.rank,x.t.name,x.t.judge||'',...CRITERIA.map(c=>x.t.scores[c.id]),x.raw,x.norm,x.t.notes||''].map(q).join(',')));
-  state.teams.filter(t=>!isScored(t)).forEach(t=>lines.push(['',t.name,t.judge||'',...CRITERIA.map(c=>t.scores?.[c.id]??''),'','',t.notes||''].map(q).join(',')));
+  r.forEach(x=>lines.push([x.rank,x.t.name,x.t.judge||'',...CRITERIA.map(c=>x.t.scores[c.id]),x.tot,x.t.notes||''].map(q).join(',')));
+  state.teams.filter(t=>!isScored(t)).forEach(t=>lines.push(['',t.name,t.judge||'',...CRITERIA.map(c=>t.scores?.[c.id]??''),'',t.notes||''].map(q).join(',')));
   download(`hackathon-scores-${stamp()}.csv`, '﻿'+lines.join('\n'), 'text/csv');
 };
 $('#backupBtn').onclick = () => download(`hackathon-backup-${stamp()}.json`, JSON.stringify({teams:state.teams},null,2), 'application/json');
